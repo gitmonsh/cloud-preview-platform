@@ -55,11 +55,11 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
     }
 
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
 
       values = [
-        "repo:gitmonsh/cloud-preview-platform:*"
+        "repo:gitmonsh@125724069/cloud-preview-platform@1343235881:pull_request"
       ]
     }
   }
@@ -86,6 +86,8 @@ data "aws_iam_policy_document" "github_actions_permissions" {
 
     actions = [
       "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:DescribeImages",
       "ecr:CompleteLayerUpload",
       "ecr:InitiateLayerUpload",
       "ecr:PutImage",

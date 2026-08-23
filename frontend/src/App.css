@@ -641,3 +641,27 @@ h1 {
     justify-content: space-between;
   }
 }
+.api-error {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(251, 113, 133, 0.25);
+  border-radius: 12px;
+  background: rgba(251, 113, 133, 0.08);
+}
+
+.api-error strong {
+  color: #fb7185;
+}
+
+.api-error span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.status-dot-error {
+  background: #fb7185;
+  box-shadow: 0 0 0 4px rgba(251, 113, 133, 0.12);
+}

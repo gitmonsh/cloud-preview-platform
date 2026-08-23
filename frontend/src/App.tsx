@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 type PreviewStatus = "READY" | "BUILDING" | "DESTROYING";
@@ -6,49 +6,21 @@ type PreviewStatus = "READY" | "BUILDING" | "DESTROYING";
 type Preview = {
   pr: number;
   title: string;
-  branch: string;
+  branch: string | null;
   status: PreviewStatus;
   namespace: string;
-  image: string;
-  url?: string;
+  image: string | null;
+  url: string | null;
   age: string;
   replicas: string;
 };
 
-const PREVIEWS: Preview[] = [
-  {
-    pr: 18,
-    title: "Add authentication flow",
-    branch: "feature/auth",
-    status: "READY",
-    namespace: "preview-pr-18",
-    image: "pr-18",
-    url: "http://preview-pr-18.example.com",
-    age: "4 min",
-    replicas: "1 / 1",
-  },
-  {
-    pr: 17,
-    title: "Refresh landing page",
-    branch: "feature/landing",
-    status: "BUILDING",
-    namespace: "preview-pr-17",
-    image: "pr-17",
-    age: "1 min",
-    replicas: "0 / 1",
-  },
-  {
-    pr: 16,
-    title: "Improve API responses",
-    branch: "feature/api",
-    status: "READY",
-    namespace: "preview-pr-16",
-    image: "pr-16",
-    url: "http://preview-pr-16.example.com",
-    age: "12 min",
-    replicas: "1 / 1",
-  },
-];
+type PreviewResponse = {
+  count: number;
+  previews: Preview[];
+};
+
+const API_URL = "http://127.0.0.1:8000";
 
 const STATUS_LABELS: Record<PreviewStatus, string> = {
   READY: "Ready",
@@ -57,26 +29,89 @@ const STATUS_LABELS: Record<PreviewStatus, string> = {
 };
 
 function App() {
+  const [previews, setPreviews] = useState<Preview[]>([]);
   const [query, setQuery] = useState("");
   const [selectedPreview, setSelectedPreview] = useState<Preview | null>(null);
-  const [showActiveOnly, setShowActiveOnly] = useState(false);
+  const [showReadyOnly, setShowReadyOnly] = useState(false);
+
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  async function loadPreviews(showRefreshState = false) {
+    if (showRefreshState) {
+      setRefreshing(true);
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/previews`);
+
+      if (!response.ok) {
+        throw new Error(`API returned ${response.status}`);
+      }
+
+      const data: PreviewResponse = await response.json();
+
+      setPreviews(data.previews);
+      setError(null);
+      setLastUpdated(new Date());
+    } catch (requestError) {
+      console.error(requestError);
+      setError("Unable to connect to the platform API.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    loadPreviews();
+
+    const interval = window.setInterval(() => {
+      loadPreviews();
+    }, 10000);
+
+    return () => window.clearInterval(interval);
+  }, []);
 
   const filteredPreviews = useMemo(() => {
-    return PREVIEWS.filter((preview) => {
-      const matchesQuery =
-        preview.title.toLowerCase().includes(query.toLowerCase()) ||
-        preview.branch.toLowerCase().includes(query.toLowerCase()) ||
-        preview.namespace.toLowerCase().includes(query.toLowerCase()) ||
-        preview.pr.toString().includes(query);
+    const normalizedQuery = query.toLowerCase().trim();
 
-      const matchesStatus = !showActiveOnly || preview.status === "READY";
+    return previews.filter((preview) => {
+      const searchableValues = [
+        preview.title,
+        preview.branch ?? "",
+        preview.namespace,
+        preview.image ?? "",
+        preview.pr.toString(),
+      ];
+
+      const matchesQuery = searchableValues.some((value) =>
+        value.toLowerCase().includes(normalizedQuery),
+      );
+
+      const matchesStatus = !showReadyOnly || preview.status === "READY";
 
       return matchesQuery && matchesStatus;
     });
-  }, [query, showActiveOnly]);
+  }, [previews, query, showReadyOnly]);
 
-  const activeCount = PREVIEWS.filter(
-    (preview) => preview.status === "READY" || preview.status === "BUILDING",
+  const activeCount = previews.filter(
+    (preview) =>
+      preview.status === "READY" || preview.status === "BUILDING",
+  ).length;
+
+  const readyCount = previews.filter(
+    (preview) => preview.status === "READY",
+  ).length;
+
+  const buildingCount = previews.filter(
+    (preview) => preview.status === "BUILDING",
+  ).length;
+
+  const destroyingCount = previews.filter(
+    (preview) => preview.status === "DESTROYING",
   ).length;
 
   return (
@@ -84,6 +119,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">CP</div>
+
           <div>
             <div className="brand-title">Cloud Preview</div>
             <div className="brand-subtitle">Platform</div>
@@ -95,14 +131,17 @@ function App() {
             <span>◉</span>
             Overview
           </button>
+
           <button className="nav-item">
             <span>▣</span>
             Environments
           </button>
+
           <button className="nav-item">
             <span>◌</span>
             Deployments
           </button>
+
           <button className="nav-item">
             <span>⌁</span>
             Settings
@@ -110,10 +149,16 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="status-dot" />
+          <div
+            className={`status-dot ${error ? "status-dot-error" : ""}`}
+          />
+
           <div>
-            <strong>Platform healthy</strong>
-            <span>All systems operational</span>
+            <strong>{error ? "API unavailable" : "Platform healthy"}</strong>
+
+            <span>
+              {error ? "Unable to read cluster state" : "Connected to EKS"}
+            </span>
           </div>
         </div>
       </aside>
@@ -122,14 +167,25 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">Developer platform</p>
+
             <h1>Preview environments</h1>
+
             <p className="page-description">
-              Manage ephemeral environments created from GitHub pull requests.
+              Live ephemeral environments created from GitHub pull requests.
             </p>
           </div>
 
           <div className="topbar-actions">
+            <button
+              className="filter-button"
+              onClick={() => loadPreviews(true)}
+              disabled={refreshing}
+            >
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
+
             <div className="region-pill">us-west-2</div>
+
             <div className="avatar">MG</div>
           </div>
         </header>
@@ -138,32 +194,48 @@ function App() {
           <div className="stat-card">
             <span>Active previews</span>
             <strong>{activeCount}</strong>
-            <small>currently running or building</small>
+            <small>running or building</small>
           </div>
 
           <div className="stat-card">
-            <span>Deployments</span>
-            <strong>12</strong>
-            <small>across all pull requests</small>
+            <span>Ready</span>
+            <strong>{readyCount}</strong>
+            <small>available to reviewers</small>
           </div>
 
           <div className="stat-card">
-            <span>Success rate</span>
-            <strong>98.4%</strong>
-            <small>last 30 deployments</small>
+            <span>Building</span>
+            <strong>{buildingCount}</strong>
+            <small>currently deploying</small>
           </div>
 
           <div className="stat-card">
-            <span>Avg. deploy time</span>
-            <strong>48s</strong>
-            <small>build to preview ready</small>
+            <span>Destroying</span>
+            <strong>{destroyingCount}</strong>
+            <small>cleanup in progress</small>
           </div>
         </section>
 
         <section className="toolbar">
           <div>
-            <h2>Active environments</h2>
-            <p>Preview instances currently associated with pull requests.</p>
+            <h2>Preview environments</h2>
+
+            <p>
+              Real-time state from the{" "}
+              <strong>cloud-preview-eks</strong> cluster.
+              {lastUpdated && (
+                <>
+                  {" "}
+                  Last updated{" "}
+                  {lastUpdated.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
+                  .
+                </>
+              )}
+            </p>
           </div>
 
           <div className="toolbar-controls">
@@ -176,90 +248,112 @@ function App() {
             />
 
             <button
-              className={`filter-button ${showActiveOnly ? "active" : ""}`}
-              onClick={() => setShowActiveOnly((current) => !current)}
+              className={`filter-button ${showReadyOnly ? "active" : ""}`}
+              onClick={() => setShowReadyOnly((current) => !current)}
             >
-              {showActiveOnly ? "Showing ready only" : "Filter ready"}
+              {showReadyOnly ? "Showing ready only" : "Filter ready"}
             </button>
           </div>
         </section>
 
+        {error && (
+          <div className="api-error">
+            <strong>Platform API unavailable</strong>
+            <span>
+              Make sure FastAPI is running on http://127.0.0.1:8000.
+            </span>
+          </div>
+        )}
+
         <section className="preview-list">
-          {filteredPreviews.map((preview) => (
-            <article className="preview-card" key={preview.pr}>
-              <div className="preview-main">
-                <div className="preview-heading">
-                  <div className={`status-badge status-${preview.status.toLowerCase()}`}>
-                    <span className="status-indicator" />
-                    {STATUS_LABELS[preview.status]}
-                  </div>
-
-                  <span className="pr-number">PR #{preview.pr}</span>
-                </div>
-
-                <h3>{preview.title}</h3>
-
-                <div className="meta-row">
-                  <span>{preview.branch}</span>
-                  <span>•</span>
-                  <span>{preview.age}</span>
-                </div>
-
-                <div className="detail-grid">
-                  <div>
-                    <span>Namespace</span>
-                    <strong>{preview.namespace}</strong>
-                  </div>
-
-                  <div>
-                    <span>Image</span>
-                    <strong>{preview.image}</strong>
-                  </div>
-
-                  <div>
-                    <span>Replicas</span>
-                    <strong>{preview.replicas}</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="preview-actions">
-                {preview.url ? (
-                  <a
-                    className="primary-button"
-                    href={preview.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open preview
-                  </a>
-                ) : (
-                  <button className="primary-button disabled" disabled>
-                    Preview building
-                  </button>
-                )}
-
-                <button
-                  className="secondary-button"
-                  onClick={() => setSelectedPreview(preview)}
-                >
-                  View details
-                </button>
-              </div>
-            </article>
-          ))}
-
-          {filteredPreviews.length === 0 && (
+          {loading ? (
             <div className="empty-state">
-              <strong>No previews found</strong>
-              <span>Try another search or remove the filter.</span>
+              <strong>Loading cluster state...</strong>
+              <span>Querying Amazon EKS for preview environments.</span>
             </div>
+          ) : filteredPreviews.length === 0 ? (
+            <div className="empty-state">
+              <strong>No active preview environments</strong>
+
+              <span>
+                Open a pull request to create a new preview environment.
+              </span>
+            </div>
+          ) : (
+            filteredPreviews.map((preview) => (
+              <article className="preview-card" key={preview.pr}>
+                <div className="preview-main">
+                  <div className="preview-heading">
+                    <div
+                      className={`status-badge status-${preview.status.toLowerCase()}`}
+                    >
+                      <span className="status-indicator" />
+                      {STATUS_LABELS[preview.status]}
+                    </div>
+
+                    <span className="pr-number">PR #{preview.pr}</span>
+                  </div>
+
+                  <h3>{preview.title}</h3>
+
+                  <div className="meta-row">
+                    <span>{preview.branch ?? "GitHub pull request"}</span>
+                    <span>•</span>
+                    <span>{preview.age}</span>
+                  </div>
+
+                  <div className="detail-grid">
+                    <div>
+                      <span>Namespace</span>
+                      <strong>{preview.namespace}</strong>
+                    </div>
+
+                    <div>
+                      <span>Image</span>
+                      <strong>{preview.image ?? "Pending"}</strong>
+                    </div>
+
+                    <div>
+                      <span>Replicas</span>
+                      <strong>{preview.replicas}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="preview-actions">
+                  {preview.url ? (
+                    <a
+                      className="primary-button"
+                      href={preview.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open preview
+                    </a>
+                  ) : (
+                    <button
+                      className="primary-button disabled"
+                      disabled
+                    >
+                      Endpoint pending
+                    </button>
+                  )}
+
+                  <button
+                    className="secondary-button"
+                    onClick={() => setSelectedPreview(preview)}
+                  >
+                    View details
+                  </button>
+                </div>
+              </article>
+            ))
           )}
         </section>
 
         <footer className="footer">
           <span>Cloud Preview Platform</span>
-          <span>Dashboard prototype</span>
+          <span>Amazon EKS · us-west-2</span>
         </footer>
       </main>
 
@@ -306,7 +400,7 @@ function App() {
 
               <div>
                 <span>Image</span>
-                <strong>{selectedPreview.image}</strong>
+                <strong>{selectedPreview.image ?? "Pending"}</strong>
               </div>
 
               <div>
@@ -317,6 +411,16 @@ function App() {
               <div>
                 <span>Age</span>
                 <strong>{selectedPreview.age}</strong>
+              </div>
+
+              <div>
+                <span>Cluster</span>
+                <strong>cloud-preview-eks</strong>
+              </div>
+
+              <div>
+                <span>Region</span>
+                <strong>us-west-2</strong>
               </div>
             </div>
 
@@ -331,8 +435,11 @@ function App() {
                   Open preview
                 </a>
               ) : (
-                <button className="primary-button disabled" disabled>
-                  Preview building
+                <button
+                  className="primary-button disabled"
+                  disabled
+                >
+                  Endpoint pending
                 </button>
               )}
 

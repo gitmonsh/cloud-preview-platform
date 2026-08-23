@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-preview-app
+  labels:
+    app: cloud-preview-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloud-preview-app
+  template:
+    metadata:
+      labels:
+        app: cloud-preview-app
+    spec:
+      containers:
+        - name: app
+          image: 870983875264.dkr.ecr.us-west-2.amazonaws.com/cloud-preview-platform:latest
+          ports:
+            - containerPort: 8000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloud-preview-app
+spec:
+  type: LoadBalancer
+  selector:
+    app: cloud-preview-app
+  ports:
+    - port: 80
+      targetPort: 8000

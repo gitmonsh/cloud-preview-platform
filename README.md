@@ -7,6 +7,9 @@ When a pull request is opened or updated, the platform automatically builds a PR
 When the pull request is closed or merged, the preview environment is automatically removed.
 
 ---
+## Architecture
+
+![Cloud Preview Platform Architecture](docs/architecture.png)
 
 ## Why I Built This
 

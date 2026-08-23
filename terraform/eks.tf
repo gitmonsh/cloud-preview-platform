@@ -31,12 +31,20 @@ module "eks" {
     github_actions = {
       principal_arn = aws_iam_role.github_actions.arn
 
+      kubernetes_groups = [
+        "preview-namespace-manager"
+      ]
+
       policy_associations = {
-        admin = {
-          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        preview_edit = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
 
           access_scope = {
-            type = "cluster"
+            type = "namespace"
+
+            namespaces = [
+              "preview-pr-*"
+            ]
           }
         }
       }

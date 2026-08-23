@@ -4,21 +4,165 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
 
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-west-2
+  EKS_CLUSTER: cloud-preview-eks
+  ECR_REPOSITORY: cloud-preview-platform
+  ECR_REGISTRY: 870983875264.dkr.ecr.us-west-2.amazonaws.com
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  NAMESPACE: preview-pr-${{ github.event.pull_request.number }}
+  APP_NAME: cloud-preview-app
+
 jobs:
-  build:
-    if: github.event.action != 'closed'
+  preview:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::870983875264:role/cloud-preview-github-actions
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Build Docker image
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER"
+
+      - name: Delete preview environment
+        if: github.event.action == 'closed'
+        run: |
+          kubectl delete namespace "$NAMESPACE" --ignore-not-found=true
+
+      - name: Login to Amazon ECR
+        if: github.event.action != 'closed'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        if: github.event.action != 'closed'
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
-          tags: cloud-preview-platform:pr-${{ github.event.pull_request.number }}
+          push: true
+          platforms: linux/amd64
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:pr-${{ env.PR_NUMBER }}
+
+      - name: Verify image
+        if: github.event.action != 'closed'
+        run: |
+          aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="pr-${PR_NUMBER}"
+
+      - name: Create preview namespace
+        if: github.event.action != 'closed'
+        run: |
+          kubectl create namespace "$NAMESPACE" \
+            --dry-run=client \
+            -o yaml | kubectl apply -f -
+
+      - name: Deploy preview application
+        if: github.event.action != 'closed'
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${APP_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${APP_NAME}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${APP_NAME}
+            template:
+              metadata:
+                labels:
+                  app: ${APP_NAME}
+              spec:
+                containers:
+                  - name: app
+                    image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:pr-${PR_NUMBER}
+                    ports:
+                      - containerPort: 8000
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${APP_NAME}
+            namespace: ${NAMESPACE}
+          spec:
+            type: LoadBalancer
+            selector:
+              app: ${APP_NAME}
+            ports:
+              - port: 80
+                targetPort: 8000
+          EOF
+
+      - name: Wait for deployment
+        if: github.event.action != 'closed'
+        run: |
+          kubectl rollout status \
+            deployment/"$APP_NAME" \
+            -n "$NAMESPACE" \
+            --timeout=180s
+
+      - name: Wait for preview URL
+        if: github.event.action != 'closed'
+        run: |
+          echo "Waiting for AWS Load Balancer..."
+
+          for i in {1..60}; do
+            HOSTNAME=$(kubectl get service "$APP_NAME" \
+              -n "$NAMESPACE" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+
+            if [ -n "$HOSTNAME" ]; then
+              echo "Preview URL: http://$HOSTNAME"
+              echo "PREVIEW_URL=http://$HOSTNAME" >> "$GITHUB_ENV"
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ -z "${HOSTNAME:-}" ]; then
+            echo "Load Balancer hostname was not assigned within the expected time."
+            kubectl get service "$APP_NAME" -n "$NAMESPACE"
+            exit 1
+          fi
+
+      - name: Comment preview URL
+        if: github.event.action != 'closed'
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ env.PREVIEW_URL }}
+        with:
+          script: |
+            const body = [
+              '## Preview Environment',
+              '',
+              `Your preview environment is ready: ${process.env.PREVIEW_URL}`,
+              '',
+              `Namespace: \`${process.env.NAMESPACE}\``,
+              `Image: \`pr-${process.env.PR_NUMBER}\``
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

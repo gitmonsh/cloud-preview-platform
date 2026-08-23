@@ -3,3 +3,15 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+
+# Terraform variable files may contain secrets
+*.tfvars
+*.tfvars.json

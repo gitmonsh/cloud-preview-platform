@@ -15,3 +15,6 @@ crash.*.log
 # Terraform variable files may contain secrets
 *.tfvars
 *.tfvars.json
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/

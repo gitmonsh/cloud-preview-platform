@@ -1,85 +1,556 @@
 # Cloud Preview Platform
 
-An automated platform for creating **ephemeral preview environments for GitHub pull requests** using AWS, Kubernetes, Terraform, Docker, and GitHub Actions.
+A cloud-native platform for creating, observing, and destroying **ephemeral Kubernetes preview environments** for GitHub pull requests.
 
-When a pull request is opened or updated, the platform automatically:
+The platform combines automated GitHub Actions deployments with an interactive developer dashboard backed by a FastAPI control plane. Each pull request can receive an isolated Kubernetes namespace, PR-specific container image, public AWS Load Balancer endpoint, live deployment status, Kubernetes health information, and application logs.
 
-- Builds a PR-specific Docker image
-- Pushes the image to Amazon ECR
-- Creates an isolated Kubernetes namespace in Amazon EKS
-- Deploys a production-hardened application
-- Provisions a dedicated AWS Load Balancer
-- Posts the live preview URL directly to the GitHub pull request
+Preview environments can be created automatically through GitHub Actions or managed interactively from the dashboard.
 
-When the pull request is closed or merged, the preview environment is automatically deleted.
+---
+
+## What It Does
+
+When a pull request is opened or updated, the platform can automatically:
+
+1. Authenticate to AWS using GitHub OIDC
+2. Build a PR-specific Docker image
+3. Push the image to Amazon ECR
+4. Create an isolated Kubernetes namespace
+5. Deploy the application to Amazon EKS
+6. Create a public LoadBalancer Service
+7. Wait for the preview endpoint
+8. Post the preview URL to the GitHub pull request
+
+The developer dashboard provides a second control path for managing existing PR images:
+
+- Create preview environments
+- Monitor deployment state
+- Open live previews
+- Inspect Kubernetes resources
+- View pod health and restart counts
+- Inspect CPU and memory configuration
+- Read live pod logs
+- Destroy preview environments
+
+---
+
+## Dashboard
+
+The React dashboard acts as a lightweight developer control plane for the preview platform.
+
+It displays live state from Amazon EKS rather than hard-coded environment data.
+
+### Dashboard capabilities
+
+- Active preview count
+- Ready / Building / Destroying states
+- GitHub pull request metadata
+- Branch and author information
+- Kubernetes namespace
+- Container image tag
+- Replica readiness
+- Pod state
+- Pod restart count
+- Deployment conditions
+- CPU requests and limits
+- Memory requests and limits
+- LoadBalancer availability
+- Live application logs
+- Preview URL
+- GitHub PR link
+- Preview creation
+- Confirmation-protected preview destruction
+- Search and filtering
+- Automatic cluster polling
 
 ---
 
 ## Architecture
 
-![Cloud Preview Platform Architecture](docs/architecture.png)
+```mermaid
+flowchart TD
+    DEV[Developer] --> PR[GitHub Pull Request]
 
----
+    PR --> GA[GitHub Actions]
+    GA --> OIDC[GitHub OIDC]
+    OIDC --> IAM[AWS IAM Role]
 
-## Why I Built This
+    GA --> BUILD[Docker Build]
+    BUILD --> ECR[Amazon ECR]
 
-Reviewing application changes is easier when developers can interact with a running version of the code before it is merged.
+    GA --> EKS[Amazon EKS]
 
-Without preview environments, teams may need to run changes locally, share screenshots, manually deploy branches, or coordinate access to a shared staging environment.
+    DASH[React Dashboard] --> API[FastAPI Control Plane]
+    API --> GH[GitHub REST API]
+    API --> EKS
 
-This project automates that process.
+    EKS --> NS[preview-pr-N Namespace]
+    NS --> DEPLOY[Kubernetes Deployment]
+    NS --> POD[Kubernetes Pod]
+    NS --> SVC[LoadBalancer Service]
+
+    ECR --> DEPLOY
+    DEPLOY --> POD
+
+    SVC --> URL[Public Preview URL]
+    URL --> REVIEWER[Reviewer]
+
+    POD --> LOGS[Application Logs]
+    LOGS --> API
+    API --> DASH
+
+    PR -->|Closed / Merged| CLEANUP[GitHub Actions Cleanup]
+    CLEANUP --> NS
+
+    DASH -->|Create / Destroy| API
+```
+
+The platform therefore supports two management paths:
 
 ```text
-Developer opens PR
+GitHub Pull Request
         |
         v
 GitHub Actions
         |
-        v
-Build + Deploy
-        |
-        v
-Isolated Preview Environment
-        |
-        v
-Live Preview URL
-        |
-        v
-Review changes
-        |
-        v
-Merge / Close PR
-        |
-        v
-Automatic Cleanup
+        +--------------------+
+                             |
+                             v
+                    EKS Preview Environment
+                             ^
+                             |
+                    FastAPI Control Plane
+                             ^
+                             |
+                       React Dashboard
 ```
 
-Each environment exists only for the lifetime of its pull request.
+GitHub Actions provides automated CI/CD-driven previews, while the dashboard provides an interactive developer control plane.
 
 ---
 
-## How It Works
+## Preview Lifecycle
 
-### 1. Pull Request Opened
+### 1. Pull Request Created
 
-The workflow responds to the following GitHub pull request events:
+A developer opens a pull request.
 
-```yaml
-pull_request:
-  types:
-    - opened
-    - synchronize
-    - reopened
-    - closed
+GitHub Actions starts the preview workflow.
+
+```text
+Pull Request
+     |
+     v
+GitHub Actions
 ```
 
-Opening or updating a pull request starts the preview deployment workflow.
+### 2. Container Image Built
+
+Docker Buildx creates a PR-specific image.
+
+Examples:
+
+```text
+pr-4
+pr-5
+pr-12
+```
+
+Images are built for:
+
+```text
+linux/amd64
+```
+
+and pushed to Amazon ECR.
+
+### 3. Namespace Created
+
+Each preview receives an isolated Kubernetes namespace.
+
+Example:
+
+```text
+preview-pr-4
+```
+
+This isolates the Deployment, Pod, Service, and other preview resources from other pull requests.
+
+### 4. Application Deployed
+
+The PR-specific ECR image is deployed into Amazon EKS.
+
+Example:
+
+```text
+cloud-preview-platform:pr-4
+```
+
+The Deployment includes:
+
+- Rolling deployment configuration
+- Readiness probes
+- Liveness probes
+- CPU requests and limits
+- Memory requests and limits
+
+### 5. Public Endpoint Provisioned
+
+A Kubernetes `LoadBalancer` Service provisions an AWS load balancer.
+
+Once AWS assigns a hostname, the preview becomes publicly accessible.
+
+### 6. Dashboard Discovers the Environment
+
+The FastAPI control plane queries the Kubernetes API and returns the live environment state to the React dashboard.
+
+The dashboard automatically polls the platform API and displays transitions such as:
+
+```text
+BUILDING
+   |
+   v
+READY
+```
+
+### 7. Environment Observed
+
+From the dashboard, a developer can inspect:
+
+```text
+PR metadata
+Namespace
+Deployment
+Replicas
+Pod
+Container image
+CPU / memory configuration
+Deployment conditions
+LoadBalancer
+Application logs
+```
+
+### 8. Environment Destroyed
+
+The environment can be removed automatically when the pull request closes or interactively from the dashboard.
+
+Deleting:
+
+```text
+preview-pr-4
+```
+
+removes the namespaced Kubernetes resources and triggers cleanup of the associated AWS Load Balancer.
 
 ---
 
-### 2. Secure AWS Authentication
+## Dashboard-Driven Lifecycle
 
-GitHub Actions authenticates to AWS using **OpenID Connect (OIDC)**.
+The dashboard can manage the Kubernetes lifecycle of a preview using an existing PR-specific ECR image.
+
+```text
+Create Preview
+      |
+      v
+FastAPI Control Plane
+      |
+      v
+Create preview-pr-N
+      |
+      +----------------+
+      |                |
+      v                v
+Deployment          Service
+      |                |
+      v                v
+     Pod          LoadBalancer
+      |                |
+      +-------+--------+
+              |
+              v
+            READY
+              |
+       +------+------+
+       |             |
+       v             v
+  View Logs     Open Preview
+       |
+       v
+Destroy Preview
+       |
+       v
+Namespace Deleted
+```
+
+Destructive actions require confirmation in the dashboard.
+
+---
+
+## Live Kubernetes Observability
+
+The platform API communicates with the Kubernetes API to provide live environment information.
+
+For each preview, the dashboard can display:
+
+### Deployment
+
+- Desired replicas
+- Available replicas
+- Ready replicas
+- Deployment conditions
+- Deployment progress
+
+### Pods
+
+- Pod name
+- Running phase
+- Readiness
+- Restart count
+- Node assignment
+
+### Container Resources
+
+Example:
+
+```text
+CPU request:     100m
+CPU limit:       500m
+
+Memory request:  128Mi
+Memory limit:    256Mi
+```
+
+### Service
+
+- Service type
+- Cluster IP
+- AWS LoadBalancer availability
+- Public preview endpoint
+
+---
+
+## Live Pod Logs
+
+The dashboard can retrieve recent application logs directly from the running Kubernetes pod.
+
+The request path is:
+
+```text
+React Dashboard
+       |
+       v
+FastAPI
+       |
+       v
+Kubernetes API
+       |
+       v
+Running Pod
+       |
+       v
+Application Logs
+```
+
+Example log output:
+
+```text
+INFO: 10.0.1.36 - "GET /health HTTP/1.1" 200 OK
+```
+
+The browser never receives direct Kubernetes credentials.
+
+---
+
+## Platform API
+
+The control plane is implemented with FastAPI.
+
+Current API capabilities include:
+
+```text
+GET    /health
+GET    /api/previews
+GET    /api/previews/{pr_number}
+GET    /api/previews/{pr_number}/logs
+POST   /api/previews
+DELETE /api/previews/{pr_number}
+```
+
+### `GET /api/previews`
+
+Discovers active `preview-pr-*` namespaces and returns summary information.
+
+### `GET /api/previews/{pr_number}`
+
+Returns detailed Kubernetes state for an environment.
+
+### `GET /api/previews/{pr_number}/logs`
+
+Returns recent application logs from the running pod.
+
+### `POST /api/previews`
+
+Creates a Kubernetes preview environment using an existing PR-specific ECR image.
+
+### `DELETE /api/previews/{pr_number}`
+
+Deletes the corresponding preview namespace and its namespaced resources.
+
+---
+
+## Technology Stack
+
+### Cloud
+
+- AWS
+- Amazon EKS
+- Amazon ECR
+- AWS IAM
+- Amazon VPC
+- Elastic Load Balancing
+- AWS NAT Gateway
+- AWS KMS
+
+### Infrastructure as Code
+
+- Terraform
+- Terraform AWS Provider
+- `terraform-aws-modules/eks`
+- `terraform-aws-modules/vpc`
+
+### Kubernetes
+
+- Amazon EKS
+- Deployments
+- Pods
+- Services
+- Namespaces
+- RBAC
+- EKS Access Entries
+- Managed node groups
+- Readiness probes
+- Liveness probes
+- Resource requests and limits
+
+### CI/CD
+
+- GitHub Actions
+- GitHub OIDC
+- AWS IAM role assumption
+- Docker Buildx
+
+### Backend
+
+- Python
+- FastAPI
+- Kubernetes Python Client
+- GitHub REST API
+- Uvicorn
+
+### Frontend
+
+- React
+- TypeScript
+- Vite
+
+### Containers
+
+- Docker
+- Amazon ECR
+
+---
+
+## AWS Infrastructure
+
+The AWS infrastructure is provisioned and managed with Terraform.
+
+### VPC
+
+The networking layer contains:
+
+- VPC
+- Public subnets
+- Private subnets
+- Internet Gateway
+- NAT Gateway
+- Route tables
+
+EKS worker nodes run in private subnets.
+
+### Amazon EKS
+
+Cluster:
+
+```text
+cloud-preview-eks
+```
+
+Kubernetes version:
+
+```text
+1.34
+```
+
+Managed node group instance type:
+
+```text
+t3.small
+```
+
+Managed EKS add-ons:
+
+- VPC CNI
+- CoreDNS
+- kube-proxy
+
+### Amazon ECR
+
+Repository:
+
+```text
+cloud-preview-platform
+```
+
+Preview images use PR-specific tags:
+
+```text
+pr-1
+pr-2
+pr-3
+pr-4
+```
+
+This allows each preview environment to reference the image associated with its pull request.
+
+---
+
+## GitHub Actions CI/CD
+
+The preview workflow responds to pull request lifecycle events.
+
+For an active pull request, the workflow:
+
+1. Checks out the repository
+2. Authenticates to AWS through GitHub OIDC
+3. Configures access to Amazon EKS
+4. Authenticates to Amazon ECR
+5. Builds the Docker image
+6. Pushes the PR-specific image
+7. Creates the preview namespace
+8. Deploys the application
+9. Creates the LoadBalancer Service
+10. Waits for the public endpoint
+11. Posts the preview URL to the pull request
+
+When the pull request is closed or merged, the corresponding preview namespace is deleted.
+
+---
+
+## Passwordless AWS Authentication
+
+GitHub Actions does not require long-lived AWS access keys.
+
+Authentication uses OpenID Connect:
 
 ```text
 GitHub Actions
@@ -94,473 +565,30 @@ AWS IAM
 cloud-preview-github-actions
 ```
 
-No long-lived AWS access keys are stored in GitHub.
-
-The IAM trust relationship is restricted to the repository's pull-request identity.
+The IAM role trust relationship restricts role assumption to the configured GitHub repository identity.
 
 ---
 
-### 3. Docker Image Built
+## EKS Access and Kubernetes RBAC
 
-GitHub Actions builds the application using Docker Buildx.
+The GitHub Actions IAM role is registered with the cluster through an EKS access entry.
 
-Each pull request receives its own image tag:
+Preview deployment access is scoped using:
 
-```text
-PR #1  -> pr-1
-PR #2  -> pr-2
-PR #15 -> pr-15
-```
+- EKS access policies
+- Kubernetes RBAC
+- `preview-pr-*` namespace scope
+- A dedicated namespace-management Kubernetes group
 
-Images are built for:
-
-```text
-linux/amd64
-```
-
-and pushed to Amazon ECR.
+The CI/CD role does not require unrestricted cluster-administrator access for normal preview deployment operations.
 
 ---
 
-### 4. Image Stored in Amazon ECR
-
-The ECR repository is:
-
-```text
-cloud-preview-platform
-```
-
-Preview images use PR-specific tags:
-
-```text
-pr-1
-pr-2
-pr-3
-...
-pr-N
-```
-
-ECR image scanning is enabled on push.
-
----
-
-### 5. Isolated Kubernetes Namespace Created
-
-Each pull request receives its own Kubernetes namespace.
-
-Example:
-
-```text
-preview-pr-15
-```
-
-This provides isolation between preview environments.
-
-Multiple pull requests can therefore exist independently:
-
-```text
-Amazon EKS
-│
-├── preview-pr-12
-│   ├── Deployment
-│   └── LoadBalancer Service
-│
-├── preview-pr-13
-│   ├── Deployment
-│   └── LoadBalancer Service
-│
-└── preview-pr-14
-    ├── Deployment
-    └── LoadBalancer Service
-```
-
----
-
-### 6. Application Deployed
-
-The workflow dynamically creates the Kubernetes Deployment and Service for the pull request.
-
-The Deployment references the corresponding ECR image:
-
-```text
-cloud-preview-platform:pr-15
-```
-
-Kubernetes manifests for preview environments are generated by the CI/CD workflow rather than maintained as static per-PR files.
-
----
-
-### 7. Kubernetes Health Checks
-
-Preview deployments use both readiness and liveness probes against:
-
-```text
-GET /health
-```
-
-The FastAPI application responds with:
-
-```json
-{
-  "status": "healthy"
-}
-```
-
-The readiness probe prevents Kubernetes from routing traffic to the application until it is ready.
-
-The liveness probe allows Kubernetes to restart an unhealthy application container automatically.
-
----
-
-### 8. Resource Management
-
-Each preview container has explicit resource requests and limits.
-
-```yaml
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 256Mi
-```
-
-This prevents an individual preview environment from consuming unlimited worker-node resources.
-
----
-
-### 9. Safer Rolling Updates
-
-Deployments use a rolling update strategy:
-
-```yaml
-strategy:
-  type: RollingUpdate
-  rollingUpdate:
-    maxUnavailable: 0
-    maxSurge: 1
-```
-
-This allows an updated preview to become available before the previous pod is removed.
-
----
-
-### 10. Dedicated Preview Load Balancer
-
-Each preview namespace contains a Kubernetes Service with:
-
-```yaml
-type: LoadBalancer
-```
-
-That Service provisions a dedicated AWS Load Balancer for the preview.
-
-The architecture is therefore:
-
-```text
-preview-pr-1
-    |
-    v
-LoadBalancer #1
-    |
-    v
-Preview URL #1
-
-
-preview-pr-2
-    |
-    v
-LoadBalancer #2
-    |
-    v
-Preview URL #2
-```
-
-Each active pull request receives a unique endpoint.
-
----
-
-### 11. Preview URL Posted to GitHub
-
-GitHub Actions waits for AWS to assign the Load Balancer hostname.
-
-Once available, the workflow automatically posts the URL to the pull request.
-
-Example:
-
-```text
-Preview Environment
-
-Your preview environment is ready:
-http://example.us-west-2.elb.amazonaws.com
-
-Namespace: preview-pr-15
-Image: pr-15
-```
-
-Reviewers can open the URL and test the exact code contained in the pull request.
-
----
-
-### 12. Automatic Cleanup
-
-Closing or merging the pull request triggers the cleanup path.
-
-```text
-PR Closed / Merged
-        |
-        v
-GitHub Actions
-        |
-        v
-Delete preview-pr-N
-        |
-        v
-Deployment Deleted
-Service Deleted
-Pods Deleted
-        |
-        v
-AWS Load Balancer Removed
-```
-
-This prevents abandoned preview environments from remaining in the Kubernetes cluster.
-
----
-
-## End-to-End Flow
-
-```text
-Developer
-    |
-    v
-GitHub Pull Request
-    |
-    v
-GitHub Actions
-    |
-    +----------------------+
-    |                      |
-    v                      v
-GitHub OIDC           Docker Build
-    |                      |
-    v                      v
-AWS IAM Role           Amazon ECR
-    |                      |
-    +----------+-----------+
-               |
-               v
-           Amazon EKS
-               |
-               v
-         preview-pr-N
-               |
-        +------+------+
-        |             |
-        v             v
-   Deployment    LoadBalancer
-        |             |
-        +------+------+
-               |
-               v
-        Unique Preview URL
-               |
-               v
-       GitHub PR Comment
-               |
-               v
-            Reviewer
-
-
-PR Closed / Merged
-        |
-        v
-Delete preview-pr-N
-        |
-        v
-Environment Removed
-```
-
----
-
-## Technology Stack
-
-### Cloud
-
-- AWS
-- Amazon EKS
-- Amazon ECR
-- AWS IAM
-- Amazon VPC
-- AWS Elastic Load Balancing
-- AWS NAT Gateway
-- AWS KMS
-
-### Infrastructure as Code
-
-- Terraform
-- Terraform AWS Provider
-- Terraform Kubernetes Provider
-- terraform-aws-modules/eks
-- terraform-aws-modules/vpc
-
-### Kubernetes
-
-- Amazon EKS
-- Namespaces
-- Deployments
-- Services
-- RBAC
-- Readiness probes
-- Liveness probes
-- Resource requests and limits
-- Rolling updates
-- Managed node groups
-
-### Containers
-
-- Docker
-- Docker Buildx
-
-### CI/CD
-
-- GitHub Actions
-- GitHub OIDC
-- AWS IAM role assumption
-
-### Application
-
-- Python
-- FastAPI
-- Uvicorn
-
----
-
-## AWS Infrastructure
-
-The AWS infrastructure is provisioned and managed with Terraform.
-
-### VPC
-
-The networking layer includes:
-
-- VPC
-- Public subnets
-- Private subnets
-- Internet Gateway
-- NAT Gateway
-- Route tables
-
-EKS worker nodes run in private subnets.
-
----
-
-## Amazon EKS
-
-The Kubernetes cluster is:
-
-```text
-cloud-preview-eks
-```
-
-The current Kubernetes version is:
-
-```text
-1.34
-```
-
-The managed node group uses:
-
-```text
-t3.small
-```
-
-with autoscaling configuration:
-
-```text
-Minimum: 1
-Desired: 1
-Maximum: 2
-```
-
-The cluster uses managed EKS add-ons:
-
-- VPC CNI
-- CoreDNS
-- kube-proxy
-
----
-
-## Amazon ECR
-
-Application images are stored in:
-
-```text
-cloud-preview-platform
-```
-
-Preview images use PR-specific tags:
-
-```text
-pr-1
-pr-2
-pr-3
-...
-pr-N
-```
-
-This ensures each preview environment references the image generated for its pull request.
-
-Image scanning is enabled when images are pushed.
-
----
-
-## CI/CD Pipeline
-
-The preview workflow is located at:
-
-```text
-.github/workflows/preview.yml
-```
-
-For an active pull request, the workflow:
-
-1. Checks out the repository
-2. Authenticates to AWS through GitHub OIDC
-3. Configures kubectl for Amazon EKS
-4. Logs into Amazon ECR
-5. Builds the Docker image
-6. Pushes the PR-specific image
-7. Verifies the ECR image
-8. Ensures the PR namespace exists
-9. Deploys the application
-10. Configures readiness and liveness probes
-11. Applies CPU and memory limits
-12. Waits for the Kubernetes Deployment
-13. Verifies application health
-14. Waits for the AWS Load Balancer
-15. Posts the preview URL to the pull request
-
-For a closed pull request, the workflow:
-
-1. Authenticates to AWS
-2. Connects to Amazon EKS
-3. Deletes the PR namespace
-
----
-
-## Security
-
-Security was treated as a first-class part of the platform rather than relying on permanent cloud credentials or cluster-admin CI/CD access.
+## Security Design
 
 ### GitHub OIDC
 
-GitHub Actions authenticates to AWS using temporary OIDC credentials.
-
-No long-lived AWS access keys are required in GitHub secrets.
-
----
+Temporary AWS credentials are issued through OIDC rather than storing permanent AWS access keys in GitHub.
 
 ### Dedicated CI/CD IAM Role
 
@@ -570,126 +598,82 @@ GitHub Actions assumes:
 cloud-preview-github-actions
 ```
 
-The workflow does not use the developer IAM identity.
+instead of using a developer IAM identity.
 
----
+### Repository-Restricted Trust
 
-### Repository-Restricted OIDC Trust
-
-The AWS IAM trust policy restricts role assumption to the GitHub repository's pull-request identity.
-
-The OIDC audience is restricted to:
-
-```text
-sts.amazonaws.com
-```
-
----
-
-### Scoped ECR Permissions
-
-The GitHub Actions IAM role receives only the ECR permissions required to authenticate, push images, verify images, and interact with the project's ECR repository.
-
----
-
-### Restricted EKS Access
-
-GitHub Actions does **not** have EKS cluster-admin access.
-
-The IAM role is registered with EKS using an EKS access entry.
-
-Application-level access uses:
-
-```text
-AmazonEKSEditPolicy
-```
-
-scoped to namespaces matching:
-
-```text
-preview-pr-*
-```
-
-This prevents the CI/CD role from receiving edit access across every Kubernetes namespace.
-
----
-
-### Namespace Lifecycle RBAC
-
-Because Kubernetes namespace creation and deletion are cluster-scoped operations, a dedicated Kubernetes RBAC role handles only preview namespace lifecycle management.
-
-Terraform manages:
-
-```text
-preview-namespace-manager
-```
-
-The role is limited to namespace operations required by the preview workflow.
-
-It does not grant the workflow general cluster administration.
-
----
+The IAM role trust relationship is restricted to the intended GitHub repository workflow identity.
 
 ### Private Worker Nodes
 
-EKS worker nodes are deployed inside private VPC subnets.
-
-Outbound internet access is provided through NAT rather than directly exposing worker nodes publicly.
-
----
+EKS worker nodes run inside private VPC subnets.
 
 ### ECR Image Scanning
 
-Amazon ECR scans container images when they are pushed.
+Container image scanning is enabled when images are pushed.
+
+### EKS Access Entries
+
+AWS identities are mapped to EKS through access entries.
+
+### Kubernetes RBAC
+
+Namespace management is separated from namespaced application permissions.
+
+### Backend-Mediated Cluster Access
+
+The React application does not communicate directly with Kubernetes.
+
+```text
+Browser
+   |
+   v
+FastAPI
+   |
+   v
+Kubernetes API
+```
+
+This prevents Kubernetes credentials from being exposed to the browser.
+
+### Confirmation-Protected Destruction
+
+The dashboard requires explicit confirmation before deleting a preview environment.
 
 ---
 
-## Production Hardening
+## Application
 
-The preview deployment includes several production-oriented safeguards.
+The preview application is implemented with FastAPI.
 
-### Readiness Probe
-
-```text
-/health
-```
-
-is checked before Kubernetes sends traffic to the application.
-
-### Liveness Probe
-
-Kubernetes continuously checks application health and can restart unhealthy containers.
-
-### CPU Limits
+The container runs:
 
 ```text
-Request: 100m
-Limit:   500m
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### Memory Limits
+The application listens internally on port:
 
 ```text
-Request: 128Mi
-Limit:   256Mi
+8000
 ```
 
-### Rolling Updates
+The LoadBalancer exposes it publicly on:
 
 ```text
-maxUnavailable: 0
-maxSurge: 1
+80
 ```
 
-### Image Pull Behavior
+A successfully deployed preview returns:
 
-Preview containers use:
-
-```text
-imagePullPolicy: Always
+```json
+{
+  "message": "Preview Environment Platform",
+  "version": "1.1.0"
+}
 ```
 
-so updated PR images are retrieved during deployment.
+The application also provides a health endpoint used by Kubernetes readiness and liveness probes.
 
 ---
 
@@ -697,37 +681,51 @@ so updated PR images are retrieved during deployment.
 
 ```text
 cloud-preview-platform/
-│
+|
 ├── .github/
 │   └── workflows/
 │       └── preview.yml
-│
+|
+├── api/
+│   ├── main.py
+│   └── requirements.txt
+|
 ├── app/
 │   ├── main.py
 │   └── requirements.txt
-│
+|
 ├── docs/
 │   └── architecture.png
-│
+|
+├── frontend/
+│   ├── public/
+│   ├── src/
+│   │   ├── App.tsx
+│   │   ├── App.css
+│   │   ├── index.css
+│   │   └── main.tsx
+│   ├── package.json
+│   └── vite.config.ts
+|
 ├── terraform/
 │   ├── main.tf
 │   ├── vpc.tf
 │   ├── eks.tf
 │   ├── rbac.tf
 │   └── .terraform.lock.hcl
-│
+|
 ├── Dockerfile
-├── README.md
-└── .gitignore
+├── .gitignore
+└── README.md
 ```
 
-Preview Kubernetes resources are generated dynamically by the GitHub Actions workflow.
+Kubernetes preview resources are generated dynamically rather than stored as static manifests.
 
 ---
 
-## Running Locally
+## Running the Preview Application Locally
 
-Create a Python virtual environment:
+Create a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -751,38 +749,80 @@ Run the application:
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+---
+
+## Running the Platform API Locally
+
+Install the control-plane dependencies:
+
+```bash
+python3 -m pip install -r api/requirements.txt
+```
+
+Ensure your local kubeconfig can access:
+
+```text
+cloud-preview-eks
+```
+
+Then start the API:
+
+```bash
+python3 -m uvicorn api.main:app --reload --port 8000
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected response:
+
+```json
+{
+  "status": "healthy"
+}
+```
+
+---
+
+## Running the Dashboard Locally
+
+In another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
 Open:
 
 ```text
-http://localhost:8000
+http://localhost:5173
 ```
 
-Health endpoint:
+The dashboard connects to the local FastAPI control plane on:
 
 ```text
-http://localhost:8000/health
+http://127.0.0.1:8000
 ```
 
 ---
 
 ## Running with Docker
 
-Build the image:
+Build the preview application:
 
 ```bash
 docker build -t cloud-preview-platform .
 ```
 
-Run the container:
+Run it:
 
 ```bash
 docker run -p 8000:8000 cloud-preview-platform
-```
-
-Open:
-
-```text
-http://localhost:8000
 ```
 
 ---
@@ -795,11 +835,17 @@ Infrastructure configuration is located in:
 terraform/
 ```
 
-Initialize Terraform:
+Initialize:
 
 ```bash
 cd terraform
 terraform init
+```
+
+Format:
+
+```bash
+terraform fmt
 ```
 
 Validate:
@@ -814,27 +860,27 @@ Review changes:
 terraform plan
 ```
 
-Apply changes:
+Apply:
 
 ```bash
 terraform apply
 ```
 
-Terraform state files are excluded from Git and should not be committed.
+Terraform state files must not be committed to the repository.
 
 ---
 
-## Tested End-to-End
+## End-to-End Validation
 
-The platform has been tested through multiple complete pull-request lifecycles.
+The platform has been tested through the complete lifecycle.
 
-The validated flow includes:
+### GitHub-Driven Flow
 
 ```text
 Pull Request Opened
         |
         v
-GitHub Actions Started
+GitHub Actions
         |
         v
 OIDC Authentication
@@ -846,160 +892,130 @@ Docker Image Built
 Image Pushed to ECR
         |
         v
-Preview Namespace Created
+EKS Namespace Created
         |
         v
-Hardened Deployment Created
-        |
-        v
-Health Checks Pass
+Application Deployed
         |
         v
 AWS Load Balancer Created
         |
         v
-Preview URL Posted to GitHub
+Preview URL Available
         |
         v
-Application Successfully Accessed
+Pull Request Closed / Merged
         |
         v
-Pull Request Merged
-        |
-        v
-Preview Namespace Deleted
-        |
-        v
-Environment Cleaned Up
+Namespace Deleted
 ```
 
-The deployed preview returned:
+### Dashboard-Driven Flow
 
-```json
-{
-  "message": "Preview Environment Platform",
-  "version": "1.1.0"
-}
+```text
+Create Preview
+      |
+      v
+BUILDING
+      |
+      v
+READY
+      |
+      +-------------------+
+      |                   |
+      v                   v
+Open Preview         View Details
+                          |
+                          v
+                     View Logs
+                          |
+                          v
+                   Destroy Preview
+                          |
+                          v
+                     0 Active
 ```
 
-The same lifecycle was also verified after removing EKS cluster-admin access from the GitHub Actions role.
+This validates provisioning, observability, application access, and cleanup.
 
 ---
 
-## Architecture Tradeoffs
+## Engineering Tradeoffs
 
 ### One Load Balancer Per Preview
 
-Each preview currently receives its own AWS Load Balancer.
+Each preview currently receives its own Kubernetes `LoadBalancer` Service.
 
-This provides simple isolation and unique endpoints but becomes less cost-efficient as the number of simultaneous previews grows.
+Advantages:
 
-A future version can use a shared ingress architecture.
+- Simple isolation
+- Independent preview URLs
+- Straightforward lifecycle management
 
----
+Tradeoff:
 
-### Dynamic Kubernetes Resources
+- Higher cost and slower provisioning at large scale
 
-Preview Deployments and Services are generated directly by the CI/CD workflow.
+A larger implementation could use a shared Application Load Balancer with an ingress controller.
 
-This keeps the current system simple, but a larger implementation could move these resources into reusable Helm charts.
+### Existing ECR Image Required for Dashboard Creation
 
----
+The dashboard control plane creates Kubernetes environments from existing `pr-N` images.
 
-### Public EKS API Endpoint
+Image building remains the responsibility of CI/CD.
 
-The EKS API currently has public endpoint access enabled to allow GitHub-hosted Actions runners to connect to the cluster.
-
-A more restrictive production architecture could use private runners or additional network controls.
-
----
-
-## Roadmap
-
-### Phase 1 — Platform Foundation
-
-- [x] Dockerized FastAPI application
-- [x] Terraform-managed AWS infrastructure
-- [x] Amazon VPC
-- [x] Amazon ECR
-- [x] Amazon EKS
-- [x] Managed node group
-- [x] EKS managed add-ons
-- [x] GitHub Actions CI/CD
-- [x] GitHub OIDC authentication
-- [x] PR-specific Docker images
-- [x] PR-specific Kubernetes namespaces
-- [x] Automatic preview deployments
-- [x] Unique preview URLs
-- [x] GitHub PR comments
-- [x] Automatic cleanup
-
-### Phase 2 — Production & Security Hardening
-
-- [x] Kubernetes readiness probes
-- [x] Kubernetes liveness probes
-- [x] CPU requests and limits
-- [x] Memory requests and limits
-- [x] Rolling deployment strategy
-- [x] PR-specific deployment labels
-- [x] Remove CI/CD EKS cluster-admin access
-- [x] Namespace-scoped EKS edit permissions
-- [x] Dedicated namespace-management RBAC
-- [x] Terraform-managed Kubernetes RBAC
-
-### Phase 3 — Platform Improvements
-
-- [ ] Shared ingress architecture
-- [ ] HTTPS/TLS
-- [ ] Custom preview domains
-- [ ] Automatic preview expiration
-- [ ] Monitoring and observability
-- [ ] Centralized logs
-- [ ] Cost controls
-- [ ] Improved deployment status reporting
-
-### Phase 4 — Preview Platform Dashboard
-
-The next major feature is a web dashboard for viewing and managing preview environments.
-
-Planned dashboard features:
-
-- [ ] Active preview environments
-- [ ] Pull request information
-- [ ] Deployment status
-- [ ] Kubernetes namespace
-- [ ] Container image version
-- [ ] Preview URL
-- [ ] Environment age
-- [ ] Deployment history
-- [ ] Open Preview action
-- [ ] View Logs
-- [ ] Redeploy environment
-- [ ] Destroy environment
-
-Example:
+This keeps responsibilities separated:
 
 ```text
-Cloud Preview Platform
-────────────────────────────────────
+GitHub Actions
+    |
+    v
+Build + Push Image
 
-3 Active Previews
-
-┌──────────────────────────────────┐
-│ PR #15                 ● RUNNING │
-│                                  │
-│ Namespace: preview-pr-15         │
-│ Image:     pr-15                 │
-│                                  │
-│ [ Open Preview ]                 │
-└──────────────────────────────────┘
-
-┌──────────────────────────────────┐
-│ PR #16                ● BUILDING │
-│                                  │
-│ Namespace: preview-pr-16         │
-└──────────────────────────────────┘
+Dashboard
+    |
+    v
+Manage Kubernetes Lifecycle
 ```
+
+### Public Preview Endpoints
+
+Preview environments currently use public HTTP LoadBalancer endpoints.
+
+A production implementation should add:
+
+- HTTPS/TLS
+- Authentication
+- Custom preview domains
+- Network restrictions where appropriate
+
+### Local Control Plane
+
+The current dashboard/API control plane is intended for local development and demonstration.
+
+Before exposing create/delete operations publicly, the API should be protected with authentication and authorization.
+
+---
+
+## Future Improvements
+
+Potential production-scale improvements include:
+
+- Authentication for the developer dashboard
+- Role-based dashboard authorization
+- HTTPS/TLS
+- Custom preview domains
+- Shared ingress architecture
+- Preview expiration / TTL policies
+- Cost controls
+- Metrics and tracing
+- Centralized log aggregation
+- Persistent deployment history
+- Audit logging
+- Multiple application support
+- WebSocket or server-sent-event updates
+- GitHub webhook integration
+- Automated ECR image cleanup
 
 ---
 
@@ -1010,23 +1026,87 @@ This project demonstrates hands-on experience with:
 - AWS cloud infrastructure
 - Amazon EKS
 - Amazon ECR
-- Amazon VPC
-- AWS IAM
 - Kubernetes
-- Kubernetes RBAC
 - Terraform
 - Infrastructure as Code
 - Docker
 - GitHub Actions
 - CI/CD pipelines
 - GitHub OIDC
-- Container security
+- AWS IAM
+- Kubernetes RBAC
+- EKS Access Entries
 - VPC networking
-- Ephemeral environments
-- Automated environment lifecycle management
+- React
+- TypeScript
+- FastAPI
+- REST API design
+- Kubernetes API integration
+- Container health checks
 - Resource management
-- Production deployment patterns
+- Live application logging
+- Ephemeral environments
+- Developer platform engineering
+- Automated environment lifecycle management
 - Cloud security fundamentals
+
+---
+
+## Status
+
+### Platform Foundation
+
+- [x] Dockerized FastAPI application
+- [x] Terraform-managed AWS infrastructure
+- [x] Amazon ECR
+- [x] Amazon EKS
+- [x] Private EKS worker nodes
+- [x] GitHub Actions CI/CD
+- [x] GitHub OIDC authentication
+- [x] PR-specific images
+- [x] PR-specific namespaces
+- [x] Automatic preview deployment
+- [x] Public preview URLs
+- [x] Automatic cleanup
+
+### Security and Reliability
+
+- [x] Kubernetes readiness probes
+- [x] Kubernetes liveness probes
+- [x] CPU requests and limits
+- [x] Memory requests and limits
+- [x] Rolling deployment configuration
+- [x] EKS access entries
+- [x] Namespace-scoped EKS deployment access
+- [x] Kubernetes namespace-management RBAC
+
+### Developer Control Plane
+
+- [x] React + TypeScript dashboard
+- [x] FastAPI platform API
+- [x] Live EKS environment discovery
+- [x] GitHub PR metadata
+- [x] Deployment status
+- [x] Pod status
+- [x] Resource configuration
+- [x] Deployment conditions
+- [x] Live pod logs
+- [x] Create preview
+- [x] Destroy preview
+- [x] Open live preview
+- [x] Search and filtering
+- [x] Automatic dashboard polling
+
+### Future Production Enhancements
+
+- [ ] Dashboard authentication
+- [ ] HTTPS/TLS
+- [ ] Shared ingress
+- [ ] Custom preview domains
+- [ ] Persistent deployment history
+- [ ] Monitoring and tracing
+- [ ] Preview TTL / expiration
+- [ ] Cost controls
 
 ---
 

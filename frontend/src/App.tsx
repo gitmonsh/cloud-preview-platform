@@ -7,6 +7,8 @@ type Preview = {
   pr: number;
   title: string;
   branch: string | null;
+  author: string | null;
+  github_url: string | null;
   status: PreviewStatus;
   namespace: string;
   image: string | null;
@@ -82,6 +84,7 @@ function App() {
       const searchableValues = [
         preview.title,
         preview.branch ?? "",
+        preview.author ?? "",
         preview.namespace,
         preview.image ?? "",
         preview.pr.toString(),
@@ -221,8 +224,7 @@ function App() {
             <h2>Preview environments</h2>
 
             <p>
-              Real-time state from the{" "}
-              <strong>cloud-preview-eks</strong> cluster.
+              Real-time state from <strong>cloud-preview-eks</strong>.
               {lastUpdated && (
                 <>
                   {" "}
@@ -274,7 +276,6 @@ function App() {
           ) : filteredPreviews.length === 0 ? (
             <div className="empty-state">
               <strong>No active preview environments</strong>
-
               <span>
                 Open a pull request to create a new preview environment.
               </span>
@@ -297,8 +298,22 @@ function App() {
                   <h3>{preview.title}</h3>
 
                   <div className="meta-row">
-                    <span>{preview.branch ?? "GitHub pull request"}</span>
+                    <span>
+                      {preview.branch
+                        ? `branch: ${preview.branch}`
+                        : "GitHub pull request"}
+                    </span>
+
                     <span>•</span>
+
+                    <span>
+                      {preview.author
+                        ? `by ${preview.author}`
+                        : "author unavailable"}
+                    </span>
+
+                    <span>•</span>
+
                     <span>{preview.age}</span>
                   </div>
 
@@ -337,6 +352,17 @@ function App() {
                     >
                       Endpoint pending
                     </button>
+                  )}
+
+                  {preview.github_url && (
+                    <a
+                      className="secondary-button"
+                      href={preview.github_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View on GitHub
+                    </a>
                   )}
 
                   <button
@@ -394,6 +420,16 @@ function App() {
 
             <div className="modal-grid">
               <div>
+                <span>Branch</span>
+                <strong>{selectedPreview.branch ?? "Unavailable"}</strong>
+              </div>
+
+              <div>
+                <span>Author</span>
+                <strong>{selectedPreview.author ?? "Unavailable"}</strong>
+              </div>
+
+              <div>
                 <span>Namespace</span>
                 <strong>{selectedPreview.namespace}</strong>
               </div>
@@ -425,6 +461,17 @@ function App() {
             </div>
 
             <div className="modal-footer">
+              {selectedPreview.github_url && (
+                <a
+                  className="secondary-button"
+                  href={selectedPreview.github_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  GitHub PR
+                </a>
+              )}
+
               {selectedPreview.url ? (
                 <a
                   className="primary-button"

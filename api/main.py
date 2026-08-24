@@ -2,13 +2,14 @@ from datetime import datetime, timezone
 import os
 import re
 
+import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config
 
 app = FastAPI(
     title="Cloud Preview Platform API",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -22,6 +23,7 @@ app.add_middleware(
 )
 
 NAMESPACE_PATTERN = re.compile(r"^preview-pr-(\d+)$")
+GITHUB_REPOSITORY = "gitmonsh/cloud-preview-platform"
 
 
 def load_kubernetes_config() -> None:
@@ -62,6 +64,35 @@ def human_age(created_at) -> str:
     return f"{hours // 24}d"
 
 
+def get_pull_request(pr_number: int):
+    """
+    Read public GitHub pull-request metadata.
+    """
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/pulls/{pr_number}",
+            timeout=5,
+            headers={
+                "Accept": "application/vnd.github+json",
+            },
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+
+        return {
+            "title": data.get("title"),
+            "branch": data.get("head", {}).get("ref"),
+            "author": data.get("user", {}).get("login"),
+            "github_url": data.get("html_url"),
+        }
+
+    except requests.RequestException:
+        return None
+
+
 @app.get("/health")
 def health():
     return {
@@ -81,15 +112,19 @@ def get_previews():
     previews = []
 
     for namespace in namespaces:
-        match = NAMESPACE_PATTERN.match(namespace.metadata.name or "")
+        namespace_name = namespace.metadata.name or ""
+
+        match = NAMESPACE_PATTERN.match(namespace_name)
 
         if not match:
             continue
 
         pr_number = int(match.group(1))
 
+        pull_request = get_pull_request(pr_number)
+
         deployments = apps_api.list_namespaced_deployment(
-            namespace=namespace.metadata.name
+            namespace=namespace_name
         ).items
 
         deployment = next(
@@ -102,7 +137,7 @@ def get_previews():
         )
 
         services = core_api.list_namespaced_service(
-            namespace=namespace.metadata.name
+            namespace=namespace_name
         ).items
 
         service = next(
@@ -150,10 +185,28 @@ def get_previews():
         previews.append(
             {
                 "pr": pr_number,
-                "title": f"Pull Request #{pr_number}",
-                "branch": None,
+                "title": (
+                    pull_request["title"]
+                    if pull_request and pull_request.get("title")
+                    else f"Pull Request #{pr_number}"
+                ),
+                "branch": (
+                    pull_request["branch"]
+                    if pull_request
+                    else None
+                ),
+                "author": (
+                    pull_request["author"]
+                    if pull_request
+                    else None
+                ),
+                "github_url": (
+                    pull_request["github_url"]
+                    if pull_request
+                    else None
+                ),
                 "status": status,
-                "namespace": namespace.metadata.name,
+                "namespace": namespace_name,
                 "image": image.split(":")[-1] if image else None,
                 "url": preview_url,
                 "age": human_age(namespace.metadata.creation_timestamp),
@@ -167,4 +220,3 @@ def get_previews():
         "count": len(previews),
         "previews": previews,
     }
-

@@ -9,7 +9,7 @@ from kubernetes import client, config
 
 app = FastAPI(
     title="Cloud Preview Platform API",
-    version="1.2.0",
+    version="1.4.0",
 )
 
 app.add_middleware(
@@ -23,14 +23,20 @@ app.add_middleware(
 )
 
 NAMESPACE_PATTERN = re.compile(r"^preview-pr-(\d+)$")
+
 GITHUB_REPOSITORY = "gitmonsh/cloud-preview-platform"
+
 APP_NAME = "cloud-preview-app"
+
+AWS_ACCOUNT_ID = "870983875264"
+AWS_REGION = "us-west-2"
+ECR_REPOSITORY = "cloud-preview-platform"
 
 
 def load_kubernetes_config() -> None:
     """
-    Use the local kubeconfig during development and
-    in-cluster authentication when deployed inside Kubernetes.
+    Use local kubeconfig during development and in-cluster
+    authentication when deployed inside Kubernetes.
     """
     if os.getenv("KUBERNETES_SERVICE_HOST"):
         config.load_incluster_config()
@@ -145,9 +151,6 @@ def get_container_resources(container):
 
 
 def get_pod_readiness(pod):
-    """
-    Determine whether the pod's containers are currently ready.
-    """
     statuses = pod.status.container_statuses or []
 
     if not statuses:
@@ -315,7 +318,6 @@ def get_preview_details(pr_number: int):
                 status_code=404,
                 detail=f"Preview namespace '{namespace_name}' not found",
             )
-
         raise
 
     if not NAMESPACE_PATTERN.match(namespace_name):
@@ -380,9 +382,7 @@ def get_preview_details(pr_number: int):
                 {
                     "name": container_status.name,
                     "ready": container_status.ready,
-                    "restart_count": (
-                        container_status.restart_count or 0
-                    ),
+                    "restart_count": container_status.restart_count or 0,
                 }
             )
 
@@ -477,7 +477,6 @@ def get_preview_logs(pr_number: int):
                 status_code=404,
                 detail=f"Preview namespace '{namespace_name}' not found",
             )
-
         raise
 
     pods = core_api.list_namespaced_pod(
@@ -514,4 +513,224 @@ def get_preview_logs(pr_number: int):
         "container": "app",
         "lines": len(logs.splitlines()),
         "logs": logs,
+    }
+
+
+@app.post("/api/previews")
+def create_preview(pr_number: int):
+    load_kubernetes_config()
+
+    core_api = client.CoreV1Api()
+    apps_api = client.AppsV1Api()
+
+    namespace_name = f"preview-pr-{pr_number}"
+
+    image = (
+        f"{AWS_ACCOUNT_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com/"
+        f"{ECR_REPOSITORY}:pr-{pr_number}"
+    )
+
+    pull_request = get_pull_request(pr_number)
+
+    if not pull_request:
+        raise HTTPException(
+            status_code=404,
+            detail=f"GitHub pull request #{pr_number} was not found",
+        )
+
+    try:
+        core_api.read_namespace(namespace_name)
+
+        raise HTTPException(
+            status_code=409,
+            detail=f"Preview '{namespace_name}' already exists",
+        )
+
+    except client.exceptions.ApiException as exc:
+        if exc.status != 404:
+            raise
+
+    namespace = client.V1Namespace(
+        metadata=client.V1ObjectMeta(
+            name=namespace_name,
+            labels={
+                "app.kubernetes.io/managed-by": "cloud-preview-platform",
+                "preview.pr": str(pr_number),
+            },
+        )
+    )
+
+    try:
+        core_api.create_namespace(namespace)
+    except client.exceptions.ApiException as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to create namespace: {exc.reason}",
+        )
+
+    deployment = client.V1Deployment(
+        metadata=client.V1ObjectMeta(
+            name=APP_NAME,
+            namespace=namespace_name,
+            labels={
+                "app": APP_NAME,
+                "preview.pr": str(pr_number),
+            },
+        ),
+        spec=client.V1DeploymentSpec(
+            replicas=1,
+            strategy=client.V1DeploymentStrategy(
+                type="RollingUpdate",
+                rolling_update=client.V1RollingUpdateDeployment(
+                    max_unavailable=0,
+                    max_surge=1,
+                ),
+            ),
+            selector=client.V1LabelSelector(
+                match_labels={
+                    "app": APP_NAME,
+                },
+            ),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(
+                    labels={
+                        "app": APP_NAME,
+                        "preview.pr": str(pr_number),
+                    },
+                ),
+                spec=client.V1PodSpec(
+                    containers=[
+                        client.V1Container(
+                            name="app",
+                            image=image,
+                            image_pull_policy="Always",
+                            ports=[
+                                client.V1ContainerPort(
+                                    container_port=8000,
+                                ),
+                            ],
+                            resources=client.V1ResourceRequirements(
+                                requests={
+                                    "cpu": "100m",
+                                    "memory": "128Mi",
+                                },
+                                limits={
+                                    "cpu": "500m",
+                                    "memory": "256Mi",
+                                },
+                            ),
+                            readiness_probe=client.V1Probe(
+                                http_get=client.V1HTTPGetAction(
+                                    path="/health",
+                                    port=8000,
+                                ),
+                                initial_delay_seconds=5,
+                                period_seconds=5,
+                            ),
+                            liveness_probe=client.V1Probe(
+                                http_get=client.V1HTTPGetAction(
+                                    path="/health",
+                                    port=8000,
+                                ),
+                                initial_delay_seconds=10,
+                                period_seconds=10,
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+        ),
+    )
+
+    service = client.V1Service(
+        metadata=client.V1ObjectMeta(
+            name=APP_NAME,
+            namespace=namespace_name,
+            labels={
+                "app": APP_NAME,
+                "preview.pr": str(pr_number),
+            },
+        ),
+        spec=client.V1ServiceSpec(
+            type="LoadBalancer",
+            selector={
+                "app": APP_NAME,
+            },
+            ports=[
+                client.V1ServicePort(
+                    port=80,
+                    target_port=8000,
+                ),
+            ],
+        ),
+    )
+
+    try:
+        apps_api.create_namespaced_deployment(
+            namespace=namespace_name,
+            body=deployment,
+        )
+
+        core_api.create_namespaced_service(
+            namespace=namespace_name,
+            body=service,
+        )
+
+    except client.exceptions.ApiException as exc:
+        try:
+            core_api.delete_namespace(namespace_name)
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to create preview resources: {exc.reason}",
+        )
+
+    return {
+        "message": "Preview environment creation started",
+        "pr": pr_number,
+        "title": pull_request.get("title"),
+        "branch": pull_request.get("branch"),
+        "namespace": namespace_name,
+        "image": f"pr-{pr_number}",
+        "status": "BUILDING",
+    }
+
+
+@app.delete("/api/previews/{pr_number}")
+def destroy_preview(pr_number: int):
+    load_kubernetes_config()
+
+    core_api = client.CoreV1Api()
+    namespace_name = f"preview-pr-{pr_number}"
+
+    try:
+        core_api.read_namespace(namespace_name)
+    except client.exceptions.ApiException as exc:
+        if exc.status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Preview '{namespace_name}' does not exist",
+            )
+        raise
+
+    try:
+        core_api.delete_namespace(
+            name=namespace_name,
+            body=client.V1DeleteOptions(
+                propagation_policy="Foreground",
+            ),
+        )
+    except client.exceptions.ApiException as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to destroy preview: {exc.reason}",
+        )
+
+    return {
+        "message": "Preview environment deletion started",
+        "pr": pr_number,
+        "namespace": namespace_name,
+        "status": "DESTROYING",
     }

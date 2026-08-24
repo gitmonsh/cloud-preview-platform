@@ -86,18 +86,27 @@ function App() {
   const [query, setQuery] = useState("");
   const [selectedPreview, setSelectedPreview] =
     useState<PreviewDetails | null>(null);
+
   const [showReadyOnly, setShowReadyOnly] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [destroying, setDestroying] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
-
-  const [logs, setLogs] = useState<LogsResponse | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [destroyError, setDestroyError] = useState<string | null>(null);
+
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
+
+  const [prInput, setPrInput] = useState("");
+  const [logs, setLogs] = useState<LogsResponse | null>(null);
 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
@@ -127,9 +136,51 @@ function App() {
     }
   }
 
+  async function createPreview() {
+    const prNumber = Number.parseInt(prInput.trim(), 10);
+
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      setCreateError("Enter a valid pull request number.");
+      return;
+    }
+
+    setCreating(true);
+    setCreateError(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/previews?pr_number=${prNumber}`,
+        {
+          method: "POST",
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Unable to create preview.");
+      }
+
+      setShowCreateModal(false);
+      setPrInput("");
+
+      await loadPreviews(true);
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to create preview.";
+
+      setCreateError(message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
   async function openDetails(preview: Preview) {
     setDetailsLoading(true);
     setDetailsError(null);
+    setDestroyError(null);
     setLogs(null);
     setLogsError(null);
     setSelectedPreview(null);
@@ -178,11 +229,58 @@ function App() {
     }
   }
 
+  async function destroyPreview() {
+    if (!selectedPreview) {
+      return;
+    }
+
+    setDestroying(true);
+    setDestroyError(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/previews/${selectedPreview.pr}`,
+        {
+          method: "DELETE",
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ?? "Unable to destroy preview.",
+        );
+      }
+
+      setShowDestroyConfirm(false);
+      setSelectedPreview(null);
+      setLogs(null);
+
+      await loadPreviews(true);
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to destroy preview.";
+
+      setDestroyError(message);
+    } finally {
+      setDestroying(false);
+    }
+  }
+
   function closeDetails() {
+    if (destroying) {
+      return;
+    }
+
     setSelectedPreview(null);
     setLogs(null);
     setLogsError(null);
     setDetailsError(null);
+    setDestroyError(null);
+    setShowDestroyConfirm(false);
   }
 
   useEffect(() => {
@@ -254,22 +352,50 @@ function App() {
             <span>◉</span>
             Overview
           </button>
-
-          <button className="nav-item">
-            <span>▣</span>
-            Environments
-          </button>
-
-          <button className="nav-item">
-            <span>◌</span>
-            Deployments
-          </button>
-
-          <button className="nav-item">
-            <span>⌁</span>
-            Settings
-          </button>
         </nav>
+
+        <div
+          style={{
+            marginTop: "24px",
+            padding: "14px",
+            border: "1px solid var(--border)",
+            borderRadius: "12px",
+            background: "rgba(13, 27, 47, 0.55)",
+          }}
+        >
+          <p
+            style={{
+              margin: "0 0 6px",
+              color: "var(--muted-strong)",
+              fontSize: "11px",
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}
+          >
+            Live cluster
+          </p>
+
+          <strong
+            style={{
+              display: "block",
+              fontSize: "12px",
+            }}
+          >
+            cloud-preview-eks
+          </strong>
+
+          <span
+            style={{
+              display: "block",
+              marginTop: "4px",
+              color: "var(--muted)",
+              fontSize: "11px",
+            }}
+          >
+            Amazon EKS · us-west-2
+          </span>
+        </div>
 
         <div className="sidebar-footer">
           <div
@@ -305,6 +431,16 @@ function App() {
           </div>
 
           <div className="topbar-actions">
+            <button
+              className="primary-button"
+              onClick={() => {
+                setCreateError(null);
+                setShowCreateModal(true);
+              }}
+            >
+              + Create Preview
+            </button>
+
             <button
               className="filter-button"
               onClick={() => loadPreviews(true)}
@@ -416,7 +552,7 @@ function App() {
               <strong>No active preview environments</strong>
 
               <span>
-                Open a pull request to create a new preview environment.
+                Create one using the button above.
               </span>
             </div>
           ) : (
@@ -521,365 +657,581 @@ function App() {
           )}
         </section>
 
-        <footer className="footer">
-          <span>Cloud Preview Platform</span>
-          <span>Amazon EKS · us-west-2</span>
-        </footer>
-      </main>
-
-      {detailsLoading && (
-        <div className="modal-backdrop">
-          <div className="details-modal">
-            <p className="eyebrow">Kubernetes details</p>
-
-            <h2>Loading...</h2>
-
-            <p className="page-description">
-              Reading live deployment, pod, and service state.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {detailsError && !detailsLoading && (
-        <div className="modal-backdrop">
-          <div className="details-modal">
-            <p className="eyebrow">Kubernetes details</p>
-
-            <h2>Unable to load details</h2>
-
-            <p className="page-description">
-              {detailsError}
-            </p>
-
-            <div className="modal-footer">
-              <button
-                className="secondary-button"
-                onClick={() => setDetailsError(null)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {selectedPreview && !detailsLoading && (
-        <div
-          className="modal-backdrop"
-          onClick={closeDetails}
-        >
+        {showCreateModal && (
           <div
-            className="details-modal"
-            onClick={(event) => event.stopPropagation()}
+            className="modal-backdrop"
+            onClick={() => {
+              if (!creating) {
+                setShowCreateModal(false);
+                setCreateError(null);
+              }
+            }}
           >
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">
-                  Kubernetes details
-                </p>
-
-                <h2>PR #{selectedPreview.pr}</h2>
-              </div>
-
-              <button
-                className="close-button"
-                onClick={closeDetails}
-                aria-label="Close details"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="modal-status">
-              <div
-                className={`status-badge status-${selectedPreview.status.toLowerCase()}`}
-              >
-                <span className="status-indicator" />
-
-                {STATUS_LABELS[selectedPreview.status]}
-              </div>
-
-              <span>{selectedPreview.title}</span>
-            </div>
-
-            <div className="modal-grid">
-              <div>
-                <span>Branch</span>
-                <strong>
-                  {selectedPreview.branch ?? "Unavailable"}
-                </strong>
-              </div>
-
-              <div>
-                <span>Author</span>
-                <strong>
-                  {selectedPreview.author ?? "Unavailable"}
-                </strong>
-              </div>
-
-              <div>
-                <span>Namespace</span>
-                <strong>{selectedPreview.namespace}</strong>
-              </div>
-
-              <div>
-                <span>Namespace status</span>
-                <strong>
-                  {selectedPreview.namespace_status}
-                </strong>
-              </div>
-
-              <div>
-                <span>Deployment</span>
-                <strong>
-                  {selectedPreview.deployment.name ?? "Missing"}
-                </strong>
-              </div>
-
-              <div>
-                <span>Replicas</span>
-                <strong>
-                  {selectedPreview.deployment.ready_replicas} /{" "}
-                  {selectedPreview.deployment.desired_replicas}
-                </strong>
-              </div>
-
-              <div>
-                <span>Image</span>
-                <strong>
-                  {selectedPreview.image ?? "Pending"}
-                </strong>
-              </div>
-
-              <div>
-                <span>CPU</span>
-                <strong>
-                  {selectedPreview.resources.requests.cpu ?? "—"} request /{" "}
-                  {selectedPreview.resources.limits.cpu ?? "—"} limit
-                </strong>
-              </div>
-
-              <div>
-                <span>Memory</span>
-                <strong>
-                  {selectedPreview.resources.requests.memory ?? "—"} request /{" "}
-                  {selectedPreview.resources.limits.memory ?? "—"} limit
-                </strong>
-              </div>
-
-              <div>
-                <span>Service</span>
-                <strong>
-                  {selectedPreview.service.type ?? "Missing"}
-                </strong>
-              </div>
-
-              <div>
-                <span>Endpoint</span>
-                <strong>
-                  {selectedPreview.service.preview_url
-                    ? "Available"
-                    : "Pending"}
-                </strong>
-              </div>
-            </div>
-
             <div
-              style={{
-                marginTop: "24px",
-                borderTop: "1px solid var(--border)",
-                paddingTop: "20px",
-              }}
+              className="details-modal create-modal"
+              onClick={(event) => event.stopPropagation()}
             >
-              <p className="eyebrow">Pods</p>
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">Create environment</p>
+                  <h2>New preview</h2>
+                </div>
 
-              {selectedPreview.pods.length === 0 ? (
-                <p className="page-description">
-                  No pods found.
-                </p>
-              ) : (
-                selectedPreview.pods.map((pod) => (
-                  <div
-                    key={pod.name}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns:
-                        "minmax(0, 1.5fr) repeat(3, minmax(70px, 0.6fr))",
-                      gap: "12px",
-                      padding: "12px 0",
-                      borderBottom:
-                        "1px solid var(--border)",
-                    }}
-                  >
-                    <strong
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {pod.name}
-                    </strong>
+                <button
+                  className="close-button"
+                  onClick={() => {
+                    if (!creating) {
+                      setShowCreateModal(false);
+                      setCreateError(null);
+                    }
+                  }}
+                  disabled={creating}
+                >
+                  ×
+                </button>
+              </div>
 
-                    <span>{pod.phase}</span>
-
-                    <span>
-                      {pod.ready ? "Ready" : "Not ready"}
-                    </span>
-
-                    <span>
-                      Restarts: {pod.restart_count}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div
-              style={{
-                marginTop: "22px",
-                borderTop: "1px solid var(--border)",
-                paddingTop: "20px",
-              }}
-            >
-              <p className="eyebrow">
-                Deployment conditions
+              <p className="page-description">
+                Enter a GitHub pull request number with an existing
+                PR-specific ECR image.
               </p>
 
-              {selectedPreview.deployment.conditions.map(
-                (condition) => (
-                  <div
-                    key={condition.type}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: "16px",
-                      padding: "8px 0",
-                    }}
-                  >
-                    <strong>{condition.type}</strong>
+              <div style={{ marginTop: "22px" }}>
+                <label
+                  htmlFor="pr-number"
+                  style={{
+                    display: "block",
+                    marginBottom: "8px",
+                    color: "var(--muted)",
+                    fontSize: "12px",
+                  }}
+                >
+                  Pull request number
+                </label>
 
-                    <span>
-                      {condition.status}
-                      {condition.reason
-                        ? ` · ${condition.reason}`
-                        : ""}
-                    </span>
-                  </div>
-                ),
+                <input
+                  id="pr-number"
+                  className="search"
+                  style={{ width: "100%" }}
+                  type="number"
+                  min="1"
+                  value={prInput}
+                  onChange={(event) => setPrInput(event.target.value)}
+                  placeholder="Example: 4"
+                  disabled={creating}
+                />
+              </div>
+
+              {createError && (
+                <div
+                  className="api-error"
+                  style={{ marginTop: "16px" }}
+                >
+                  <strong>Unable to create preview</strong>
+                  <span>{createError}</span>
+                </div>
               )}
+
+              <div className="modal-footer">
+                <button
+                  className="secondary-button"
+                  onClick={() => {
+                    setShowCreateModal(false);
+                    setCreateError(null);
+                  }}
+                  disabled={creating}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="primary-button"
+                  onClick={createPreview}
+                  disabled={creating}
+                >
+                  {creating ? "Creating..." : "Create Preview"}
+                </button>
+              </div>
             </div>
+          </div>
+        )}
 
+        {detailsLoading && (
+          <div className="modal-backdrop">
+            <div className="details-modal">
+              <p className="eyebrow">Kubernetes details</p>
+
+              <h2>Loading...</h2>
+
+              <p className="page-description">
+                Reading live deployment, pod, and service state.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {detailsError && !detailsLoading && (
+          <div className="modal-backdrop">
+            <div className="details-modal">
+              <p className="eyebrow">Kubernetes details</p>
+
+              <h2>Unable to load details</h2>
+
+              <p className="page-description">
+                {detailsError}
+              </p>
+
+              <div className="modal-footer">
+                <button
+                  className="secondary-button"
+                  onClick={() => setDetailsError(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedPreview && !detailsLoading && (
+          <div
+            className="modal-backdrop"
+            onClick={closeDetails}
+          >
             <div
-              style={{
-                marginTop: "22px",
-                borderTop: "1px solid var(--border)",
-                paddingTop: "20px",
-              }}
+              className="details-modal"
+              onClick={(event) => event.stopPropagation()}
             >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "12px",
-                  marginBottom: "12px",
-                }}
-              >
+              <div className="modal-header">
                 <div>
-                  <p className="eyebrow">Live logs</p>
-
-                  <p
-                    style={{
-                      marginBottom: 0,
-                      color: "var(--muted)",
-                      fontSize: "12px",
-                    }}
-                  >
-                    {logs
-                      ? `${logs.lines} recent lines · ${logs.pod}`
-                      : "Read the latest application logs from the pod."}
+                  <p className="eyebrow">
+                    Kubernetes details
                   </p>
+
+                  <h2>PR #{selectedPreview.pr}</h2>
                 </div>
 
                 <button
-                  className="secondary-button"
-                  onClick={() => loadLogs(selectedPreview.pr)}
-                  disabled={logsLoading}
+                  className="close-button"
+                  onClick={closeDetails}
+                  aria-label="Close details"
                 >
-                  {logsLoading ? "Loading logs..." : "View logs"}
+                  ×
                 </button>
               </div>
 
-              {logsError && (
-                <div className="api-error">
-                  <strong>Unable to load logs</strong>
-                  <span>{logsError}</span>
-                </div>
-              )}
+              <div className="modal-status">
+                <div
+                  className={`status-badge status-${selectedPreview.status.toLowerCase()}`}
+                >
+                  <span className="status-indicator" />
 
-              {logs && (
+                  {STATUS_LABELS[selectedPreview.status]}
+                </div>
+
+                <span>{selectedPreview.title}</span>
+              </div>
+
+              <div className="modal-grid">
+                <div>
+                  <span>Branch</span>
+                  <strong>
+                    {selectedPreview.branch ?? "Unavailable"}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Author</span>
+                  <strong>
+                    {selectedPreview.author ?? "Unavailable"}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Namespace</span>
+                  <strong>{selectedPreview.namespace}</strong>
+                </div>
+
+                <div>
+                  <span>Namespace status</span>
+                  <strong>
+                    {selectedPreview.namespace_status}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Deployment</span>
+                  <strong>
+                    {selectedPreview.deployment.name ?? "Missing"}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Replicas</span>
+                  <strong>
+                    {selectedPreview.deployment.ready_replicas} /{" "}
+                    {selectedPreview.deployment.desired_replicas}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Image</span>
+                  <strong>
+                    {selectedPreview.image ?? "Pending"}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>CPU</span>
+                  <strong>
+                    {selectedPreview.resources.requests.cpu ?? "—"} request /{" "}
+                    {selectedPreview.resources.limits.cpu ?? "—"} limit
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Memory</span>
+                  <strong>
+                    {selectedPreview.resources.requests.memory ?? "—"} request /{" "}
+                    {selectedPreview.resources.limits.memory ?? "—"} limit
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Service</span>
+                  <strong>
+                    {selectedPreview.service.type ?? "Missing"}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Endpoint</span>
+                  <strong>
+                    {selectedPreview.service.preview_url
+                      ? "Available"
+                      : "Pending"}
+                  </strong>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  marginTop: "24px",
+                  borderTop: "1px solid var(--border)",
+                  paddingTop: "20px",
+                }}
+              >
+                <p className="eyebrow">Pods</p>
+
+                {selectedPreview.pods.length === 0 ? (
+                  <p className="page-description">
+                    No pods found.
+                  </p>
+                ) : (
+                  selectedPreview.pods.map((pod) => (
+                    <div
+                      key={pod.name}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns:
+                          "minmax(0, 1.5fr) repeat(3, minmax(70px, 0.6fr))",
+                        gap: "12px",
+                        padding: "12px 0",
+                        borderBottom:
+                          "1px solid var(--border)",
+                      }}
+                    >
+                      <strong
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {pod.name}
+                      </strong>
+
+                      <span>{pod.phase}</span>
+
+                      <span>
+                        {pod.ready ? "Ready" : "Not ready"}
+                      </span>
+
+                      <span>
+                        Restarts: {pod.restart_count}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div
+                style={{
+                  marginTop: "22px",
+                  borderTop: "1px solid var(--border)",
+                  paddingTop: "20px",
+                }}
+              >
+                <p className="eyebrow">
+                  Deployment conditions
+                </p>
+
+                {selectedPreview.deployment.conditions.map(
+                  (condition) => (
+                    <div
+                      key={condition.type}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: "16px",
+                        padding: "8px 0",
+                      }}
+                    >
+                      <strong>{condition.type}</strong>
+
+                      <span>
+                        {condition.status}
+                        {condition.reason
+                          ? ` · ${condition.reason}`
+                          : ""}
+                      </span>
+                    </div>
+                  ),
+                )}
+              </div>
+
+              <div
+                style={{
+                  marginTop: "22px",
+                  borderTop: "1px solid var(--border)",
+                  paddingTop: "20px",
+                }}
+              >
                 <div
                   style={{
-                    maxHeight: "280px",
-                    overflow: "auto",
-                    padding: "14px",
-                    border: "1px solid var(--border)",
-                    borderRadius: "10px",
-                    background: "#050b14",
-                    fontFamily:
-                      '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-                    fontSize: "11px",
-                    lineHeight: 1.6,
-                    whiteSpace: "pre-wrap",
-                    color: "#cbd5e1",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    marginBottom: "12px",
                   }}
                 >
-                  {logs.logs}
+                  <div>
+                    <p className="eyebrow">Live logs</p>
+
+                    <p
+                      style={{
+                        marginBottom: 0,
+                        color: "var(--muted)",
+                        fontSize: "12px",
+                      }}
+                    >
+                      {logs
+                        ? `${logs.lines} recent lines · ${logs.pod}`
+                        : "Read the latest application logs from the pod."}
+                    </p>
+                  </div>
+
+                  <button
+                    className="secondary-button"
+                    onClick={() => loadLogs(selectedPreview.pr)}
+                    disabled={logsLoading}
+                  >
+                    {logsLoading
+                      ? "Loading logs..."
+                      : "View logs"}
+                  </button>
+                </div>
+
+                {logsError && (
+                  <div className="api-error">
+                    <strong>Unable to load logs</strong>
+                    <span>{logsError}</span>
+                  </div>
+                )}
+
+                {logs && (
+                  <div
+                    style={{
+                      maxHeight: "280px",
+                      overflow: "auto",
+                      padding: "14px",
+                      border: "1px solid var(--border)",
+                      borderRadius: "10px",
+                      background: "#050b14",
+                      fontFamily:
+                        '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+                      fontSize: "11px",
+                      lineHeight: 1.6,
+                      whiteSpace: "pre-wrap",
+                      color: "#cbd5e1",
+                    }}
+                  >
+                    {logs.logs}
+                  </div>
+                )}
+              </div>
+
+              {destroyError && (
+                <div
+                  className="api-error"
+                  style={{ marginTop: "20px" }}
+                >
+                  <strong>Unable to destroy preview</strong>
+                  <span>{destroyError}</span>
                 </div>
               )}
-            </div>
 
-            <div className="modal-footer">
-              {selectedPreview.github_url && (
-                <a
-                  className="secondary-button"
-                  href={selectedPreview.github_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  GitHub PR
-                </a>
-              )}
+              <div className="modal-footer">
+                {selectedPreview.github_url && (
+                  <a
+                    className="secondary-button"
+                    href={selectedPreview.github_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    GitHub PR
+                  </a>
+                )}
 
-              {selectedPreview.url ? (
-                <a
-                  className="primary-button"
-                  href={selectedPreview.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open preview
-                </a>
-              ) : (
+                {selectedPreview.url ? (
+                  <a
+                    className="primary-button"
+                    href={selectedPreview.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open preview
+                  </a>
+                ) : (
+                  <button
+                    className="primary-button disabled"
+                    disabled
+                  >
+                    Endpoint pending
+                  </button>
+                )}
+
                 <button
-                  className="primary-button disabled"
-                  disabled
+                  className="secondary-button"
+                  onClick={() => setShowDestroyConfirm(true)}
+                  disabled={destroying}
+                  style={{
+                    borderColor: "rgba(251, 113, 133, 0.35)",
+                    color: "#fb7185",
+                  }}
                 >
-                  Endpoint pending
+                  Destroy Preview
                 </button>
-              )}
 
-              <button
-                className="secondary-button"
-                onClick={closeDetails}
-              >
-                Close
-              </button>
+                <button
+                  className="secondary-button"
+                  onClick={closeDetails}
+                  disabled={destroying}
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {showDestroyConfirm && selectedPreview && (
+          <div
+            className="modal-backdrop"
+            style={{
+              zIndex: 20,
+            }}
+          >
+            <div
+              className="details-modal"
+              style={{
+                width: "min(500px, 92vw)",
+              }}
+            >
+              <p className="eyebrow">Destructive action</p>
+
+              <h2>Destroy preview?</h2>
+
+              <p className="page-description">
+                This will delete the Kubernetes namespace{" "}
+                <strong>{selectedPreview.namespace}</strong> and its
+                Deployment, Pod, Service, and LoadBalancer.
+              </p>
+
+              <div
+                style={{
+                  marginTop: "20px",
+                  padding: "14px",
+                  border: "1px solid rgba(251, 113, 133, 0.25)",
+                  borderRadius: "12px",
+                  background: "rgba(251, 113, 133, 0.06)",
+                }}
+              >
+                <strong
+                  style={{
+                    display: "block",
+                    color: "#fb7185",
+                  }}
+                >
+                  PR #{selectedPreview.pr}
+                </strong>
+
+                <span
+                  style={{
+                    display: "block",
+                    marginTop: "5px",
+                    color: "var(--muted)",
+                    fontSize: "12px",
+                  }}
+                >
+                  {selectedPreview.title}
+                </span>
+              </div>
+
+              {destroyError && (
+                <div
+                  className="api-error"
+                  style={{ marginTop: "16px" }}
+                >
+                  <strong>Destroy failed</strong>
+                  <span>{destroyError}</span>
+                </div>
+              )}
+
+              <div className="modal-footer">
+                <button
+                  className="secondary-button"
+                  onClick={() => {
+                    if (!destroying) {
+                      setShowDestroyConfirm(false);
+                      setDestroyError(null);
+                    }
+                  }}
+                  disabled={destroying}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="secondary-button"
+                  onClick={destroyPreview}
+                  disabled={destroying}
+                  style={{
+                    borderColor: "rgba(251, 113, 133, 0.4)",
+                    background: "rgba(251, 113, 133, 0.1)",
+                    color: "#fb7185",
+                    fontWeight: 700,
+                  }}
+                >
+                  {destroying
+                    ? "Destroying..."
+                    : "Destroy Preview"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   );
 }
